@@ -1,0 +1,98 @@
+# PLE pilot eval — dipasang 26 Nov 2026 ~16:15 WIB (user isi 2 secret, "Udah semua").
+# Trigger MANUAL saja (workflow_dispatch); run pertama adalah uji coba,
+# belum pernah jalan end-to-end. Pilot tetap nunggu ponai kelar + badai 503 reda.
+#
+# PERBAIKAN 16:15 (sebelum push): checkout pertama WAJIB path: ple-agent —
+# tanpa itu repo ter-checkout di workspace root dan `../ple-agent` tidak ada
+# (begitu juga path artifact `ple-agent/artifacts/`). Dengan path ini,
+# workspace = ple-agent/ + ple-kit/ berdampingan, semua path di bawah benar.
+#
+# Dasar yang sudah diverifikasi (bukan tebakan):
+# - eval/run.py: `uv run python eval/run.py <submission dir> [--tasks id,id]`
+#   (ple-kit/eval/README.md baris 19); butuh Docker jalan + uv + Harbor 0.20.0
+#   dengan websockets; HF_TOKEN dibaca dari environment.
+# - serve.py ple-agent: MODEL dibaca dari env MODEL_NAME (baris 38);
+#   evaluator menyetel OPENAI_BASE_URL + OPENAI_API_KEY untuk semua model
+#   (baris 84) — jadi model Gemini dipakai lewat endpoint OpenAI-compatible.
+# - Tugas pilot data-hall-mep-routing: grading checks deterministik, TANPA
+#   judge (TASK-STUDY-data-hall-mep-routing.md) — jadi pilot pertama ini
+#   TIDAK butuh secret judge (JUDGE_*). Judge baru dibutuhkan kalau pilot
+#   melebar ke tugas rubric/checks-judge.
+# - DOCKER-DECISION.md: GitHub Actions paling realistis — runner publik
+#   punya Docker, 2000 menit gratis/bulan; butuh HF_TOKEN + secret model.
+# - Batas yang belum teruji: workflow ini BELUM pernah jalan; nama env
+#   OPENAI_BASE_URL Gemini (generativelanguage.googleapis.com/v1beta/openai/)
+#   adalah jalur OpenAI-compatible yang sama dengan driver Hermes — tapi
+#   serve.py + eval di runner belum dibuktikan end-to-end. Run pertama
+#   adalah uji coba, bukan eval resmi.
+name: PLE pilot eval (1 task)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tasks:
+        description: "Task id(s), comma-separated"
+        default: "data-hall-mep-routing"
+        required: true
+      model:
+        description: "MODEL_NAME untuk serve.py"
+        default: "gemini-3.6-flash"
+        required: true
+
+# 1 tugas agen: jatah 6 jam/tugas. Timeout workflow 6 jam, jangan lebih.
+timeout-minutes: 360
+
+permissions:
+  contents: read
+
+jobs:
+  pilot:
+    runs-on: ubuntu-latest
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      MODEL_NAME: ${{ inputs.model }}
+      OPENAI_BASE_URL: https://generativelanguage.googleapis.com/v1beta/openai/
+      OPENAI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ple-agent
+
+      - name: Check out PLE kit (eval/run.py lives here)
+        uses: actions/checkout@v4
+        with:
+          repository: google-research/ple
+          path: ple-kit
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Install Harbor 0.20.0 (dibutuhkan eval/run.py)
+        run: uv tool install harbor==0.20.0 --with websockets
+
+      - name: Check Docker
+        run: docker version && docker info --format '{{.ServerVersion}}'
+
+      - name: Run pilot (1 task)
+        run: |
+          cd ple-kit
+          uv run python eval/run.py ../ple-agent --tasks "${{ inputs.tasks }}"
+
+      - name: Upload run outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ple-pilot-${{ inputs.tasks }}
+          path: |
+            ple-kit/runs/
+            ple-agent/artifacts/
+          if-no-files-found: warn
+          retention-days: 14
+
+# Secrets yang harus diisi dulu di repo Settings > Secrets and variables > Actions:
+#   HF_TOKEN        — token Read HF yang sama (sudah ada, tinggal copy ulang)
+#   GEMINI_API_KEY  — key Gemini lama (project gen-lang-client-0020041824),
+#                     BUKAN key gemma-agent (yang itu khusus ponai).
+# Jangan pernah tulis nilai secret di file ini / di chat.
